@@ -1,7 +1,0 @@
-[01m[K/home/Quadrotor-Landing-with-Minco/src/classicalplanning/src/main.cpp:[m[K In member function ‘[01m[Kvoid GlobalPlanner::odomCallBack(const ConstPtr&)[m[K’:
-[01m[K/home/Quadrotor-Landing-with-Minco/src/classicalplanning/src/main.cpp:204:9:[m[K [01;31m[Kerror: [m[K‘[01m[KcurrentPos[m[K’ was not declared in this scope
-  204 |         [01;31m[KcurrentPos[m[K = Eigen::Vector3d(msg->pose.pose.position.x,
-      |         [01;31m[K^~~~~~~~~~[m[K
-make[2]: *** [CMakeFiles/classical_planning.dir/build.make:63: CMakeFiles/classical_planning.dir/src/main.cpp.o] Error 1
-make[1]: *** [CMakeFiles/Makefile2:845: CMakeFiles/classical_planning.dir/all] Error 2
-make: *** [Makefile:141: all] Error 2

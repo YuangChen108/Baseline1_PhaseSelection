@@ -1,0 +1,10 @@
+<launch>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mapping)/config/rviz_sim.rviz">
+  </node>
+  <group ns="drone0">
+    <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization" output="screen">
+      <remap from="~odom" to="/vins_estimator/imu_propagate" />
+      <param name="robot_scale" value="1.0"/>
+    </node>
+  </group>
+</launch>

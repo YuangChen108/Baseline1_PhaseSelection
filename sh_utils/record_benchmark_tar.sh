@@ -1,0 +1,1 @@
+rosbag record /target/odom /global_map

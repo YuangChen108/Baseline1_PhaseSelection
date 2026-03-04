@@ -1,0 +1,138 @@
+# Para and value must split with space!
+
+target_list_mode: 0
+eight_mode: 0
+tl_mode: 1
+is_use_virtual_target: 0
+is_use_fix_goal: 0
+
+Webvis_hz: -1
+Webimg_hz: -1
+
+plan_hz: 10
+ekf_predict_rate: 50
+ekf_update_rate: 10
+stop_blade_judge_hz: 50
+img_fix_time_ms: 0
+
+PD_Ctrl/Kp_horiz: 2.0
+PD_Ctrl/Kd_horiz: 0.0
+PD_Ctrl/Kp_vert: 2.0
+PD_Ctrl/Kd_vert: 0.0
+Traj8/vel: 1.5
+Traj8/acc: 2.0
+TrajServer/dt_to_future_ms: 0
+TrajServer/dt_odom_predict_ms: 0 
+TrajServer/landing_v: 0.15
+
+# Detect
+# Detect/tag_size_0: 0.172
+# Detect/tag_size_1: 0.034
+Detect/tag_size_0: 0.237
+Detect/tag_size_1: 0.047
+# Detect/tag_size_0: 0.30
+# Detect/tag_size_1: 0.06
+
+# Prediction
+Prediction/rho_a: 1.0
+Prediction/vmax: 15.0
+filter_t_k: 1.0
+filter_q_k: 0.75
+# filter_mode: 0-lowpass, 1-average
+EKF/filter_mode: 0
+EKF/filter_v_k: 0.75
+EKF/vel_avg_filter_len: 5
+EKF/Qx: 2
+EKF/Qy: 2
+EKF/Qz: 2
+EKF/Qvx: 5
+EKF/Qvy: 5
+EKF/Qvz: 5
+EKF/Qroll: 0.1
+EKF/Qpitch: 0.1
+EKF/Qyaw: 0.1
+EKF/Rx: 0.1
+EKF/Ry: 0.1
+EKF/Rz: 0.1
+EKF/Rvx: 0.3
+EKF/Rvy: 0.3
+EKF/Rvz: 0.3
+EKF/Rroll: 0.01
+EKF/Rpitch: 0.01
+EKF/Ryaw: 0.01
+
+# Plan
+plan_estimated_duration: 0.08
+debug_switch: 1
+tracking_height: 0.6
+tracking_dist: 2.5
+tracking_dt: 0.1
+track_angle_vmax: 0.5
+tolerance_d: 0.3
+theta_clearance: 0.8
+yaw_d_max: 5.5
+enable_land_refine: 1
+enable_land_q: 0
+land_surface_dz: -0.12
+land_z_judge: 0.05
+land_horiz_judge: 0.12
+land_p_x: -0.4
+land_p_y: 0.0
+land_p_z: -0.18
+# land_p_x: -0.5
+# land_p_y: 0.0
+# land_p_z: -0.06
+
+# Traj_Opt
+K: 8
+max_iter: 300
+vmax: 10.0
+amax: 2.0
+amax_land1: 1.0
+amax_land2: 1.0
+land_change_acc_dis: 1.0
+rhoT: 100.0
+rhoP: 10000.0
+rhoV_t: 10000.0
+rhoA_t: 10000.0
+rhoTracking_t: 2.0
+rhosVisibility: 1000.0
+clearance_d: 0.2
+theta_clearance: 0.8
+tolerance_d_t_h: 0.0
+tolerance_d_t_v: 0.0
+
+rhoV_l: 10000.0
+rhoA_l: 10000.0
+rhoLanding_p_h: 20.0
+rhoLanding_p_z: 20.0
+rhoLanding_z: 0.0
+rhoLanding_v: 1.0
+tolerance_d_l: 0.0
+landing_a_xy_limit: 0.2
+landing_a_z_limit: 0.1
+
+tracking_dur: 3.0
+landing_dur_max: 3.0
+landing_dur_min: 1.0
+land_dv_max: 0.8
+land_no_plan_time: 0.1
+
+# Target List
+Target/size: 4
+
+Target/0/x: 2.0
+Target/0/y: 0.0
+Target/0/z: 0.0
+
+Target/1/x: 2.0
+Target/1/y: 0.0
+Target/1/z: 0.0
+
+Target/2/x: 2.0
+Target/2/y: 0.0
+Target/2/z: 0.0
+
+Target/3/x: 0.0
+Target/3/y: 0.0
+Target/3/z: 0.8

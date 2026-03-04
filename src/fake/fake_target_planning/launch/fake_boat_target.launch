@@ -1,0 +1,25 @@
+<launch>
+
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mapping)/config/rviz_sim.rviz">
+  </node>
+  
+  <node pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">
+    <rosparam file="$(find uav_simulator)/config/mockamap.yaml"/>
+    <remap from="/mock_map" to="/global_map"/>
+  </node>
+
+  <group ns="target">
+
+    <node pkg="uav_simulator" type="fake_boat.py" name="fake_boat_node" output="screen">
+        <param name="velocity" value="1.0"/>   <param name="wave_amp" value="0.3"/>   <param name="wave_freq" value="1.0"/>  <remap from="/target_pose" to="odom"/> 
+    </node>
+
+    <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization_car" output="screen">
+      <remap from="~odom" to="odom" />
+      <param name="mesh_resource" value="package://odom_visualization/meshes/car.dae"/>
+      <param name="robot_scale" value="0.1"/>
+    </node>
+
+
+    </group>
+</launch>

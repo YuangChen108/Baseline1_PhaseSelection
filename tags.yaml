@@ -1,0 +1,4 @@
+standalone_tags:
+  - id: 0
+    size: 0.15       # 这里的单位是米，设为15cm。如果要做测距，这个值必须改对
+    name: target_0

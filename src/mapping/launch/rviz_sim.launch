@@ -1,0 +1,16 @@
+<launch>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mapping)/config/rviz_sim.rviz">
+  </node>
+  <!-- <group ns="drone0">
+    <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization" output="screen">
+      <remap from="~odom" to="odom" />
+      <param name="robot_scale" value="1.0"/>
+    </node>
+    <node pkg="odom_visualization" name="odom_visualization_plate" type="odom_visualization_plate" output="screen">
+      <remap from="~odom" to="planning/target_odom" />
+      <param name="height" value="1.2"/>
+      <param name="width" value="1.6"/>
+      <param name="platform_r" value="1.0"/>
+    </node>
+  </group> -->
+</launch>
