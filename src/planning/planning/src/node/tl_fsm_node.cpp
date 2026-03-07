@@ -112,10 +112,8 @@ void TLFSM::run(){
                 // planner_->set_mode(Planner::IDLE);
                 // state_ = STOP;
                 INFO_MSG_YELLOW("[FSM] Landed! Force Switching to TRACK (Glued mode).");
-                
-                // 1. 切回追踪模式
-                planner_->set_mode(Planner::TRACK);
-                state_ = TRACK;
+                planner_->set_mode(Planner::IDLE); // 让规划器休息
+                state_ = STOP;                     // 切入停止状态
             }
             break;
         }
@@ -214,19 +212,18 @@ bool TLFSM::judge_to_stop(){
         return false;
     }
 
-    // 2. 计算误差与相对速度
     Eigen::Vector3d drone_p = odom_data.odom_p_;
     Eigen::Vector3d boat_p  = target_data.odom_p_;
-    Eigen::Vector3d drone_v = odom_data.odom_v_; // 假设你的 odom 包含速度
+    Eigen::Vector3d drone_v = odom_data.odom_v_;
     Eigen::Vector3d boat_v  = target_data.odom_v_;
-    // ==================== 导出实际飞行轨迹 ====================
-    // 使用追加模式 (app)，记录飞机走向终点的全过程
+
+    // ==================== 🛠️ 补回：导出实际飞行轨迹 (高频记录) ====================
+    // 因为 FSM 在 LAND 阶段是 100Hz 运行的，所以这里会密密麻麻地记录下飞机的真实红线
     std::string real_path = "/home/Quadrotor-Landing-with-Minco/actual_traj.csv";
     std::ofstream real_file(real_path, std::ios::out | std::ios::app);
     if (real_file.is_open()) {
-        // 第一次打开时写入表头
         real_file.seekp(0, std::ios::end);
-        if (real_file.tellp() == 0) {
+        if (real_file.tellp() == 0) { // 空文件时写表头
             real_file << "SysTime,Real_UAV_X,Real_UAV_Y,Real_UAV_Z,Real_Boat_X,Real_Boat_Y,Real_Boat_Z\n";
         }
         real_file << ros::Time::now().toSec() << ","
@@ -234,12 +231,30 @@ bool TLFSM::judge_to_stop(){
                   << boat_p.x() << "," << boat_p.y() << "," << boat_p.z() << "\n";
         real_file.close();
     }
+    // =========================================================================
 
     double dist_z  = abs(drone_p.z() - boat_p.z());
     double dist_xy = (drone_p.head(2) - boat_p.head(2)).norm();
-    
-    // 计算相对速度 (非常关键！)
     double rel_speed = (drone_v - boat_v).norm();
+
+    // ==================== 🛠️ 记录降落状态的小工具 (单次记录) ====================
+    auto record_landing_state = [&](bool is_success, const std::string& reason) {
+        std::string state_path = "/home/Quadrotor-Landing-with-Minco/landing_states.csv";
+        std::ofstream state_file(state_path, std::ios::out | std::ios::app);
+        if (state_file.is_open()) {
+            state_file.seekp(0, std::ios::end);
+            if (state_file.tellp() == 0) {
+                state_file << "Time,UAV_X,UAV_Y,UAV_Z,Boat_X,Boat_Y,Boat_Z,Dist_XY,Dist_Z,Rel_Speed,Success,Reason\n";
+            }
+            state_file << ros::Time::now().toSec() << ","
+                       << drone_p.x() << "," << drone_p.y() << "," << drone_p.z() << ","
+                       << boat_p.x() << "," << boat_p.y() << "," << boat_p.z() << ","
+                       << dist_xy << "," << dist_z << "," << rel_speed << ","
+                       << (is_success ? 1 : 0) << "," << reason << "\n";
+            state_file.close();
+        }
+    };
+    // =========================================================================
 
     // 3. 判断条件
     TimePoint sample_time = TimeNow();
@@ -248,36 +263,27 @@ bool TLFSM::judge_to_stop(){
 
     // 4. 逻辑 A：时间到了，结算这次降落
     if (time_is_up) {
-        // 判定标准：水平对准 (<0.25m) 且 相对速度够小 (<0.6m/s)
-        if (dist_xy < 0.25 && rel_speed < 0.6) { 
+        if (dist_xy < 0.25 && rel_speed < 1.5) { 
             INFO_MSG_RED("[FSM] 降落完美！对准且速度稳定。Z_err: " << dist_z);
-            if (planner_) {
-                planner_->saveLandingData(odom_data, target_data, true); // 记录成功 (Success=1)
-            }
+            if (planner_) planner_->saveLandingData(odom_data, target_data, true); 
             dataManagerPtr_->save_end_landing(TimeNow(), dataManagerPtr_->traj_info_);
+            record_landing_state(true, "Perfect_Timeout");
             INFO_MSG_RED("[FSM] STOP Propeller!");
             return true;
         } else {
-            // 记录失败！非常重要！
             INFO_MSG_YELLOW("[FSM] 降落失败！水平误差: " << dist_xy << "m, 相对速度: " << rel_speed << "m/s");
-            if (planner_) {
-                planner_->saveLandingData(odom_data, target_data, false); // 记录失败 (Success=0)
-            }
-            // 此时应该触发复飞 (Re-plan/Hover)，取决于你的 FSM 怎么写
-            // 这里 return true 强制结束本次规划状态，防止飞机瞎飞
+            if (planner_) planner_->saveLandingData(odom_data, target_data, false); 
+            record_landing_state(false, "Timeout_Fail");
             return true; 
         }
     }
 
     // 5. 逻辑 B：防砸甲板（时间没到，但已经贴脸了）
-    // 必须加上速度限制，防止高速撞击！
-    if (dist_z < 0.10 && dist_xy < 0.25 && rel_speed < 0.8) {
-        // 加这句！如果终端没变绿打印这句话，说明根本没走这里！
+    if (dist_z < 0.20 && dist_xy < 0.25 && rel_speed < 1.5) {
         ROS_INFO_STREAM("\033[1;32m[FSM] 真正满足物理条件！XY误差:" << dist_xy << " 记录Success=1\033[0m");
         INFO_MSG_RED("[FSM] 提前安全触地！");
-        if (planner_) {
-            planner_->saveLandingData(odom_data, target_data, true); // 记录成功
-        }
+        if (planner_) planner_->saveLandingData(odom_data, target_data, true); 
+        record_landing_state(true, "Early_Touchdown");
         return true;
     }
 

@@ -89,22 +89,26 @@ TLPlanner::PlanResState TLPlanner::plan_goal(const Odom& init_state_in, const Od
 
 // car tracking plan
 TLPlanner::PlanResState TLPlanner::plan_track(const Odom& init_state_in, const Odom& target_data, TrajData& traj_data){
-    //! 1. target fix
+    //! 1. target fix (水平运动预测)
     prediction::State tar;
     double theta = rot_util::quaternion2yaw(target_data.odom_q_);
-    double v_horiz = target_data.odom_v_.head(2).dot(Eigen::Vector2d(cos(theta), sin(theta)));
     
-    // 构造 tar_in (注意：这里不要手动加高 z，让它保持在水面)
-    prediction::State tar_in(target_data.odom_p_, v_horiz, 0.0, theta, target_data.odom_dyaw_, target_data.odom_v_.z());
+    // 提取船的真实水平线速度
+    double v = target_data.odom_v_.head(2).dot(Eigen::Vector2d(cos(theta), sin(theta)));
     
-    // ❌ 删掉这一行: tar_in.p_.z() += tracking_height_expect_; 
-    
-    // 预测船的运动 (振幅 0.3m)
+    // 传入小船当前真实的 X,Y,Z 和速度 (Vz 默认为 0)
+    prediction::State tar_in(target_data.odom_p_, v, 0.0, 
+                             theta, target_data.odom_dyaw_);
+                             
+    // ❌ 注意：这里绝对不要把 Z 轴加上 tracking_height_expect_！
+    // 否则会触发“2米高幽灵巨浪”Bug
+                             
+    // 运行底层的 CYRA 模型预测 (这一步主要是为了拿准确的 X 和 Y)
     prediction::Predict::CYRA_model(tar_in, plan_estimated_duration_, tar);
 
-    //! 2. prediction (生成水面上的预测轨迹)
+    //! 2. prediction (生成预测轨迹并“降维打击”)
     bool generate_new_traj_success;
-    std::vector<Eigen::Vector3d> target_predcit; // 这里才定义 target_predcit
+    std::vector<Eigen::Vector3d> target_predcit;
     
     generate_new_traj_success = prePtr_->predict(tar.p_, tar.v_, 0.0, tar.theta_, tar.omega_, target_predcit, tracking_dur_);
 
@@ -112,17 +116,21 @@ TLPlanner::PlanResState TLPlanner::plan_track(const Odom& init_state_in, const O
         INFO_MSG_RED("[tlplanner] Predict fail!");
         return FAIL;
     }
-    // INFO_MSG("[tlplanner] prediction done");
+    INFO_MSG("[tlplanner] prediction done");
 
-    // ==================== ✅ 关键修复：在这里构造“高空影子” ====================
-    // 必须放在 prePtr_->predict 之后！因为 target_predcit 刚刚才生成出来。
-    std::vector<Eigen::Vector3d> target_predict_high = target_predcit;
-    for (auto& pt : target_predict_high) {
-        // 把整条预测轨迹抬高 (比如 5米)
-        // 这样 A* 就会在 5米高空搜索路径，而不是在水面搜索
-        pt.z() += tracking_height_expect_; 
+    // ==================== ✅ 核心“压路机”魔法 ====================
+    // 我们锁定一个绝对平滑的高空 Z 值：小船当前实际高度 + 期望伴飞高度
+    // 为了防止飞机在伴飞时产生任何微小的上下抖动，我们直接写死这个平面
+    double flat_tracking_z = target_data.odom_p_.z() + tracking_height_expect_;
+    
+    // 把整条预测轨迹的 Z 轴全部碾平！变成纯粹的 2D 平滑曲线
+    for (auto& pt : target_predcit) {
+        pt.z() = flat_tracking_z;
     }
-    // =====================================================================
+    
+    // 把端点也修正到同一高度，防止 MINCO 结尾处掉高度
+    tar.p_.z() = flat_tracking_z;
+    // =============================================================
 
     //! 3. get inital state
     Eigen::MatrixXd init_state, init_yaw;
@@ -141,7 +149,7 @@ TLPlanner::PlanResState TLPlanner::plan_track(const Odom& init_state_in, const O
     envPtr_->set_track_dis(tracking_dis_expect_);
     
     // ✅ 这里传入 target_predict_high
-    generate_new_traj_success = envPtr_->findVisiblePath(p_start, target_predict_high, tracking_dt_, way_pts, path, is_use_viewpoint_); 
+    generate_new_traj_success = envPtr_->findVisiblePath(p_start, target_predcit, tracking_dt_, way_pts, path, is_use_viewpoint_);
     
     if (!generate_new_traj_success) {
         INFO_MSG_RED("[tlplanner] A path fail!");
@@ -259,18 +267,7 @@ TLPlanner::PlanResState TLPlanner::plan_land(const Odom& init_state_in, const Od
                           final_pred_v,         
                           tar_in.omega_);       
 
-    // ==================== ✅ 4. 下滑道 (Glide Slope) 修正 ====================
-    // 这是一个几何修正，防止无人机钻水
-    // 公式：目标高度 = 海浪高度 + 系数 * 水平距离
-    // 距离越远，目标抬得越高。
-    
-    double approach_slope = 0.4; // 每远 1米，抬高 0.4米 (约 20度角)
-    double glide_height_offset = approach_slope * dist_to_target;
-    
-    // 修改目标位置 Z 轴
     Eigen::Vector3d target_p_final = final_pred_p;
-    target_p_final.z() += glide_height_offset;
-
     // ==================== ✅ 5. 速度策略修正 ====================
     Eigen::Vector3d target_v_final = final_pred_v;
 
@@ -351,18 +348,38 @@ TLPlanner::PlanResState TLPlanner::plan_land(const Odom& init_state_in, const Od
     csvWriterPtr_->set_target_state(target_p_final, target_v_final, tar_in.theta_, tar_in.omega_);
     csvWriterPtr_->exportToCSV(traj_land, 0.01);
 
-    // 可视化连线 (Rays)
-    // 这里简单处理，不再遍历 target_predcit 因为它和实际轨迹可能有偏差
-    // 仅保留基本可视化防止报错
-    std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> rays;
+    // ==================== 🛠️ 加回：专属画图轨迹导出代码 ====================
+    std::string plan_path = "/home/Quadrotor-Landing-with-Minco/planned_traj.csv";
+    std::ofstream plan_file(plan_path, std::ios::out); // 每次规划覆写新文件
+    if (plan_file.is_open()) {
+        plan_file << "Time,UAV_Plan_X,UAV_Plan_Y,UAV_Plan_Z,UAV_Plan_VX,UAV_Plan_VY,UAV_Plan_VZ\n";
+        // 以 0.05 秒的步长，把整条 3D 降落轨迹采样出来
+        for (double t = 0; t <= traj_land.getTotalDuration(); t += 0.05) {
+            Eigen::Vector3d p = traj_land.getPos(t);
+            Eigen::Vector3d v = traj_land.getVel(t);
+            plan_file << t << "," << p.x() << "," << p.y() << "," << p.z() << ","
+                      << v.x() << "," << v.y() << "," << v.z() << "\n";
+        }
+        plan_file.close();
+        INFO_MSG_GREEN("✅ Python 专属降落规划轨迹已导出至 planned_traj.csv");
+    } else {
+        INFO_MSG_RED("❌ 无法打开文件 planned_traj.csv 进行写入!");
+    }
+    
     BAG(dataManagerPtr_->BagPtr_->write_traj("/traj", traj_land));
+
     if (web_vis_hz_ > 0){
         visPtr_->visualize_traj(traj_land, "traj");
     }
+    // ==================== ✅ 补回：防穿模安全检查 ====================
+    if (!valid_cheack(traj_data, TimeNow())) { 
+        INFO_MSG_RED("[plan_land] ❌ Trajectory hits WATER! Rejecting.");
+        return FAIL; 
+    }
+    // ==============================================================
 
     return PLANSUCC;
 }
-
 
 bool TLPlanner::valid_cheack(const TrajData& traj_data, const TimePoint& cur_t){
     double t0 = durationSecond(cur_t, traj_data.start_time_);
