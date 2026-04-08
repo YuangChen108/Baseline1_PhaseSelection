@@ -200,7 +200,8 @@ bool TLFSM::judge_to_stop(){
     if (!dataManagerPtr_->get_traj(dataManagerPtr_->traj_info_, traj_data)){
         return false;
     }
-    if (traj_data.getTrajState() != TrajData::D7){
+    
+    if (traj_data.getTrajState() != TrajData::D7 && traj_data.getTrajState() != TrajData::D5){
         return false;
     }
 
@@ -215,75 +216,70 @@ bool TLFSM::judge_to_stop(){
     Eigen::Vector3d drone_v = odom_data.odom_v_;
     Eigen::Vector3d boat_v  = target_data.odom_v_;
 
-    // ==================== 🛠️ 实际轨迹记录 (保持原样) ====================
-    std::string real_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/actual_traj.csv";
-    std::ofstream real_file(real_path, std::ios::out | std::ios::app);
-    if (real_file.is_open()) {
-        real_file.seekp(0, std::ios::end);
-        if (real_file.tellp() == 0) { 
-            real_file << "SysTime,Real_UAV_X,Real_UAV_Y,Real_UAV_Z,Real_Boat_X,Real_Boat_Y,Real_Boat_Z,Real_UAV_VZ,Real_Boat_VZ\n";
-        }
-        real_file << ros::Time::now().toSec() << ","
-                  << drone_p.x() << "," << drone_p.y() << "," << drone_p.z() << ","
-                  << boat_p.x() << "," << boat_p.y() << "," << boat_p.z() << ","
-                  << drone_v.z() << "," << boat_v.z() << "\n";
-        real_file.close();
-    }
-
-    // 1. 直接用无人机和船体原点算距离（最安全、最真实）
-    double dist_z  = abs(drone_p.z() - boat_p.z());
+    // 数据计算
+    double uav_z = drone_p.z();
+    double boat_z = boat_p.z();
+    double z_diff = uav_z - boat_z; // UAV高度 - 船体原点高度
     double dist_xy = (drone_p.head(2) - boat_p.head(2)).norm();
-    
-    double rel_speed = (drone_v - boat_v).norm();
-    double rel_vz = abs(drone_v.z() - boat_v.z());
-    double wave_z = boat_p.z(); // 记录海浪状态用船体原点即可
+    double rel_speed_xy = (drone_v.head(2) - boat_v.head(2)).norm();
 
+    // ==================== 🛠️ 记录逻辑 (Lambda) ====================
     auto record_landing_state = [&](bool is_success, const std::string& reason) {
         std::string state_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/landing_states.csv";
         std::ofstream state_file(state_path, std::ios::out | std::ios::app);
         if (state_file.is_open()) {
-            state_file.seekp(0, std::ios::end);
-            if (state_file.tellp() == 0) {
-                state_file << "Time,UAV_X,UAV_Y,UAV_Z,Boat_X,Boat_Y,Boat_Z,Dist_XY,Dist_Z,Rel_Speed,Rel_VZ,Wave_Z,Success,Reason\n";
-            }
             state_file << ros::Time::now().toSec() << ","
                        << drone_p.x() << "," << drone_p.y() << "," << drone_p.z() << ","
                        << boat_p.x() << "," << boat_p.y() << "," << boat_p.z() << ","
-                       << dist_xy << "," << dist_z << "," << rel_speed << ","
-                       << rel_vz << "," << wave_z << ","
+                       << dist_xy << "," << abs(z_diff) << "," << (drone_v - boat_v).norm() << ","
+                       << abs(drone_v.z() - boat_v.z()) << "," << boat_p.z() << ","
                        << (is_success ? 1 : 0) << "," << reason << "\n";
             state_file.close();
         }
     };
 
-// ==================== 判定逻辑 ====================
-    // 首先获取真实的 Z 轴高度差 (带符号：正数在上方，负数在海里)
-    double uav_z = odom_data.odom_p_.z();
-    double boat_z = target_data.odom_p_.z();
-    double z_diff = uav_z - boat_z; 
+    // ============================================================
+    // 🥇 第一优先级：黄金捕捉时刻 (Instant Cylinder Capture)
+    // ============================================================
+    // 只要有一帧满足：在甲板正上方 + 相对高度接近(允许轻微穿模) + 速度同步
+    if (dist_xy < 0.35 && z_diff >= -0.25 && z_diff <= 0.40) {
+        if (rel_speed_xy < 0.8) { 
+            ROS_INFO_STREAM("\033[1;32m[FSM] 捕捉成功！瞬间进入降落窗口。切断电机！\033[0m");
+            record_landing_state(true, "Cylinder_Drop_Success");
+            if (planner_) planner_->saveLandingData(odom_data, target_data, true); 
+            return true; 
+        }
+    }
 
-    // 1. 【高优先级】触板/穿透判定 (Terminal Strike)
-    // - 水平容忍放宽到 0.45m (海上 45cm 完全在降落板捕获范围内)
-    // - 高度差：允许在板面上方 15cm 到底部 60cm 之间 (完美捕捉“穿甲”瞬间)
-    // - 删掉 rel_vz 限制，因为我们就是要暴力下砸！把总速度放宽到 3.0
-    if (dist_xy < 0.45 && z_diff < 0.15 && z_diff > -0.60 && rel_speed < 3.0) {
-        ROS_INFO_STREAM("\033[1;32m[FSM] 捕获物理接触(硬着陆)！Success=1. XY_err: " << dist_xy << " Z_diff: " << z_diff << "\033[0m");
-        if (planner_) planner_->saveLandingData(odom_data, target_data, true); 
-        record_landing_state(true, "Touchdown_Success");
+    // ============================================================
+    // 🥈 第二优先级：防误判坠海 (针对浪涌顶起飞机的情况)
+    // ============================================================
+    // 如果 z_diff 已经负得很深了，但 dist_xy 很小，说明已经接触甲板被浪顶着跑了
+    if (dist_xy < 0.40 && z_diff < -0.25 && z_diff > -1.2) {
+        ROS_INFO_STREAM("\033[1;33m[FSM] 物理接触确认！检测到浪涌挤压，降落成功结算。\033[0m");
+        record_landing_state(true, "Wave_Contact_Success");
         return true;
     }
 
-    // 2. 【低优先级】超时判定
+    // ============================================================
+    // 🥉 第三优先级：超时与绝对事故判定
+    // ============================================================
+    
+    // 1. 绝对坠海判定：只有离船远且高度低才报 Crash
+    if (z_diff <= -0.60 && dist_xy > 1.0) {
+        INFO_MSG_RED("[FSM] 绝对坠海！远离甲板范围。");
+        record_landing_state(false, "True_Crash_Into_Sea");
+        return true; 
+    }
+
+    // 2. 超时结算
     TimePoint sample_time = TimeNow();
     double t_elapsed = durationSecond(sample_time, traj_data.start_time_);
-    
-    // 如果规划的时间已经跑完了，但还没触发上面的物理接触
-    if (t_elapsed > traj_data.getTotalDuration()) {
-        INFO_MSG_YELLOW("[FSM] 时间耗尽结算。XY_err: " << dist_xy << "m, Z_diff: " << z_diff << "m");
-        
-        // 超时后的最后宽限检查 (打补丁)
-        // 只要水平误差在 0.6m 以内，且 Z 轴确实已经压下去了(哪怕穿模穿到了 -1.5m)，都算接受！
-        if (dist_xy < 0.6 && z_diff < 0.3 && z_diff > -1.5) {
+    double safe_timeout = 2.5; 
+
+    if (t_elapsed > safe_timeout) {
+        INFO_MSG_YELLOW("[FSM] 轨迹超时结算。");
+        if (dist_xy < 0.6 && z_diff < 0.4 && z_diff > -1.5) {
              record_landing_state(true, "Timeout_Acceptable");
              return true;
         } else {
@@ -292,7 +288,7 @@ bool TLFSM::judge_to_stop(){
         }
     }
 
-    return false;
+    return false; // 继续运行
 }
 
 bool TLFSM::set_thread_para(std::shared_ptr<std::thread>& thread, const int priority, const char* name){

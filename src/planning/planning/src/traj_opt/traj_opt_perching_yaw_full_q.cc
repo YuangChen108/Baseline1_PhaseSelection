@@ -1,10 +1,12 @@
 #include <traj_opt/traj_opt.h>
-
+#include <ros/ros.h>
 #include <traj_opt/lbfgs_raw.hpp>
 
 namespace traj_opt {
 using rot_util = rotation_util::RotUtil;
-
+//可修改变量
+static double wave_freq_ = 1.0; 
+static double z_mean_ = 0.0;
 static Eigen::Vector3d car_p_, car_v_;
 static double car_v_value_;
 static double car_theta_, car_omega_;
@@ -98,29 +100,42 @@ static void R_z(const double& omega, const double& t,
 static void CYRV_model(const Eigen::Vector3d& p0, const Eigen::Vector3d& v0, const double& theta, const double& omega, const double& t,
                        Eigen::Vector3d& p1, double& theta1, Eigen::Vector3d& grad_p_t, double& grad_theta_t)
 {
-  // if (initial_guess_ && expect_traj_duration_ < 2.0 && omega > 1e-2){
+  // ==================== 1. 水平 (XY) 轴逻辑 (保持你的原有逻辑) ====================
   if (omega > 1e-2){
     double v = v0.head(2).dot(Eigen::Vector2d(cos(theta), sin(theta)));
     p1.x() = p0.x() + v / omega * sin(theta + omega*t) - v / omega *sin(theta);
     p1.y() = p0.y() - v / omega * cos(theta + omega*t) + v / omega *cos(theta);
-    p1.z() = p0.z();
+    
     grad_p_t.x() = v * cos(theta + omega*t);
     grad_p_t.y() = v * sin(theta + omega*t);
-    grad_p_t.z() = 0.0;
+    
     theta1 = theta + omega * t;
     grad_theta_t = omega;
   }else{
     p1.x() = p0.x() + v0.x() * t;
     p1.y() = p0.y() + v0.y() * t;
-    // p1.z() = p0.z();// + v0.z() * t;
-    p1.z() = p0.z() + v0.z() * t;
+    
     grad_p_t.x() = v0.x();
     grad_p_t.y() = v0.y();
-    grad_p_t.z() = v0.z();
-    // gradt.z() = 0;
+    
     theta1 = theta;
     grad_theta_t = 0.0;
   }
+
+  // ==================== 2. 垂直 (Z) 轴逻辑 (简谐波与时空耦合梯度) ====================
+  // 使用我们在 generate_traj 里刚刚读取到的内部静态变量
+  double w = 2.0 * M_PI * wave_freq_;
+  if (std::abs(w) < 1e-4) w = 1e-4; // 防止除 0 导致矩阵爆炸
+
+  double dz = p0.z() - z_mean_;
+
+  // A. 位置预测 (和 prediction.h 完全一致的简谐运动公式)
+  // z(t) = dz * cos(wt) + (vz0 / w) * sin(wt) + z_mean
+  p1.z() = dz * std::cos(w * t) + (v0.z() / w) * std::sin(w * t) + z_mean_;
+
+  // B. 🌟 核心梯度：位置对时间 t 的偏导数 (也就是 t 时刻船的垂直速度)
+  // dz/dt = -dz * w * sin(wt) + vz0 * cos(wt)
+  grad_p_t.z() = -dz * w * std::sin(w * t) + v0.z() * std::cos(w * t); 
 }
 //! SECTION variables transformation and gradient transmission
 
@@ -203,6 +218,12 @@ bool TrajOpt::generate_traj(const Eigen::MatrixXd& iniState,
                             const double& t_replan,
                             const double& z_floor_limit) {                 
   INFO_MSG("------seg: " << N);
+
+  // 🌟 新增：从 ROS 参数服务器直接抓取当前海浪频率和均值
+  // 这样做只会在此函数调用时执行一次，绝对不会拖慢底层的 L-BFGS 优化循环！
+  ros::param::get("prediction/wave_freq", wave_freq_);
+  ros::param::get("prediction/z_mean", z_mean_);
+
   z_floor_limit_ = z_floor_limit;
   N_ = N;
   dim_t_ = 1;

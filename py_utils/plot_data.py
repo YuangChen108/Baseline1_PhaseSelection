@@ -5,8 +5,8 @@ import os
 
 def run_analysis():
     # 路径配置
-    base_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/baseline_data_0.5_2.0.csv"
-    prop_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/proposed_data_0.5_2.0.csv"
+    base_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/baseline_data_0.5_1.0.csv"
+    prop_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/proposed_data_0.5_1.0.csv"
     
     if not (os.path.exists(base_path) and os.path.exists(prop_path)):
         print("❌ 错误: 找不到 CSV 文件。")
@@ -42,7 +42,7 @@ def run_analysis():
     avoided_fails = int((rate_b * trials_p) - fails_p) if rate_b > 0 else 0
 
     # 剔除物理爆炸点，计算精度平均值与标准差 (Mean and Std)
-    df = df_raw[(df_raw['Dist_XY'] < 2.0) & (df_raw['Dist_Z'] < 1.0) & (df_raw['Rel_VZ'] < 4.0)].copy()
+    df = df_raw[(df_raw['Dist_XY'] < 10.0) & (df_raw['Dist_Z'] < 5.0) & (df_raw['Rel_VZ'] < 4.0)].copy()
     
     # 🌟 恢复 Mean 和 Std 的联合计算
     stats = df.groupby('Method').agg({

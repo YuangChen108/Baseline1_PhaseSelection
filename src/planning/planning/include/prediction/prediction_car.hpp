@@ -12,11 +12,6 @@
 
 namespace prediction {
 
-// ==================== 1. 解决 C++ 版本兼容问题 ====================
-// 使用文件级静态全局变量，避免 C++17 inline 报错
-static double g_wave_freq = 1.0;
-static double g_z_mean = 0.0;
-
 // ==================== State 结构体 ====================
 class State {
  public:
@@ -68,7 +63,7 @@ struct Predict {
   bool is_debug_ = false;
 
   inline bool isValid(const State& s, const State& t) const {
-    if (abs(t.v_) > vmax || abs(t.omega_) > omega_max){
+    if (std::abs(t.v_) > vmax || std::abs(t.omega_) > omega_max){
       return false;
     }
     if (gridmapPtr_ && (!gridmapPtr_->checkRayValid(s.p_, t.p_) || gridmapPtr_->isOccupied(t.p_))){
@@ -78,6 +73,17 @@ struct Predict {
   }
 
  public:
+  // 🚀 核心改动 1：使用静态引用函数代替 static inline 变量 (兼容 C++11)
+  // 这种写法确保了无论多少个文件引用此头文件，g_wave_freq 永远指向同一个地址
+  static double& wave_freq_ref() {
+      static double val = 1.0;
+      return val;
+  }
+  static double& z_mean_ref() {
+      static double val = 0.0;
+      return val;
+  }
+
   // 构造函数
   inline Predict(std::shared_ptr<parameter_server::ParaeterSerer>& paraPtr) {
     paraPtr->get_para("tracking_dt", dt);
@@ -92,12 +98,16 @@ struct Predict {
       data[i] = new Node;
     }
 
-    // 修复 void -> bool 报错
-    g_wave_freq = 1.0; 
-    paraPtr->get_para("prediction/wave_freq", g_wave_freq);
+    // 🚀 核心改动 2：修复 get_para 返回 void 的报错
+    // 既然不能放在 if 里，我们先设置默认值，读取后再打印出来检验
+    wave_freq_ref() = 1.0; 
+    paraPtr->get_para("prediction/wave_freq", wave_freq_ref());
 
-    g_z_mean = 0.0;
-    paraPtr->get_para("prediction/z_mean", g_z_mean);
+    z_mean_ref() = 0.0;
+    paraPtr->get_para("prediction/z_mean", z_mean_ref());
+
+    // 打印结果以便排查
+    std::cout << "\033[32m[Prediction] Current g_wave_freq: " << wave_freq_ref() << " Hz\033[0m" << std::endl;
   }
 
   inline void set_gridmap_ptr(std::shared_ptr<map_interface::MapInterface>& gridmap_ptr){
@@ -129,7 +139,7 @@ struct Predict {
     init_acc = state_start.a_;
 
     auto score_ = [&](const NodePtr& ptr) -> double {
-      return rho_a * abs(ptr->state_.a_ - init_acc) + rho_domega * abs(ptr->state_.omega_ - init_omega); 
+      return rho_a * std::abs(ptr->state_.a_ - init_acc) + rho_domega * std::abs(ptr->state_.omega_ - init_omega); 
     };
 
     State state_end;
@@ -139,7 +149,6 @@ struct Predict {
       return 0.001 * (ptr->state_.p_ - state_end.p_).norm();
     };
 
-    // ✅✅✅ 修复点：这里改回 TimePoint，而不是 ros::Time
     TimePoint t_start = TimeNow(); 
     
     std::priority_queue<NodePtr, std::vector<NodePtr>, NodeComparator> open_set;
@@ -165,9 +174,6 @@ struct Predict {
           
           CYRA_model(state_change_input, dt, state_now);
           
-          if (is_debug_){
-             // Debug info...
-          }
           if (!isValid(curPtr->state_, state_now)) {
             continue;
           }
@@ -176,7 +182,6 @@ struct Predict {
             return false;
           }
           
-          // 计算耗时 (现在 t_start 是 TimePoint 类型了，durationSecond 不会报错了)
           double t_cost = durationSecond(TimeNow(), t_start);
           
           if (!is_debug_ && t_cost > max_time) {
@@ -216,26 +221,26 @@ struct Predict {
     
     // 水平运动
     state_out.v_ = state_in.v_ + state_in.a_ * dT;
-    if (abs(state_in.omega_) < 1e-2){
-      state_out.p_.x() = state_in.p_.x() + (0.5 * state_in.a_ * dT * dT + state_in.v_ * dT) * cos(state_in.theta_);
-      state_out.p_.y() = state_in.p_.y() + (0.5 * state_in.a_ * dT * dT + state_in.v_ * dT) * sin(state_in.theta_);
+    if (std::abs(state_in.omega_) < 1e-2){
+      state_out.p_.x() = state_in.p_.x() + (0.5 * state_in.a_ * dT * dT + state_in.v_ * dT) * std::cos(state_in.theta_);
+      state_out.p_.y() = state_in.p_.y() + (0.5 * state_in.a_ * dT * dT + state_in.v_ * dT) * std::sin(state_in.theta_);
       state_out.theta_ = state_in.theta_; 
     }else{
-      double cx = state_in.p_.x() - (state_in.v_ / state_in.omega_) * sin(state_in.theta_) - (state_in.a_ / pow(state_in.omega_, 2)) * cos(state_in.theta_);
-      double cy = state_in.p_.y() + (state_in.v_ / state_in.omega_) * cos(state_in.theta_) - (state_in.a_ / pow(state_in.omega_, 2)) * sin(state_in.theta_);
+      double cx = state_in.p_.x() - (state_in.v_ / state_in.omega_) * std::sin(state_in.theta_) - (state_in.a_ / std::pow(state_in.omega_, 2)) * std::cos(state_in.theta_);
+      double cy = state_in.p_.y() + (state_in.v_ / state_in.omega_) * std::cos(state_in.theta_) - (state_in.a_ / std::pow(state_in.omega_, 2)) * std::sin(state_in.theta_);
 
       state_out.theta_ = state_in.theta_ + state_in.omega_ * dT;
-      state_out.p_.x() = (state_in.a_ / pow(state_in.omega_, 2)) * cos(state_out.theta_) + (state_out.v_ / state_in.omega_) * sin(state_out.theta_) + cx;
-      state_out.p_.y() = (state_in.a_ / pow(state_in.omega_, 2)) * sin(state_out.theta_) - (state_out.v_ / state_in.omega_) * cos(state_out.theta_) + cy;
+      state_out.p_.x() = (state_in.a_ / std::pow(state_in.omega_, 2)) * std::cos(state_out.theta_) + (state_out.v_ / state_in.omega_) * std::sin(state_out.theta_) + cx;
+      state_out.p_.y() = (state_in.a_ / std::pow(state_in.omega_, 2)) * std::sin(state_out.theta_) - (state_out.v_ / state_in.omega_) * std::cos(state_out.theta_) + cy;
     }
 
-    // 垂直运动 (海浪)
-    double w = g_wave_freq;
+    // 🚀 核心改动 3：引用静态函数 wave_freq_ref() 获取全局唯一的频率值
+    double w = 2.0 * M_PI * wave_freq_ref();
     if (std::abs(w) < 1e-4) w = 1e-4; 
 
-    double dz = state_in.p_.z() - g_z_mean;
+    double dz = state_in.p_.z() - z_mean_ref();
     
-    state_out.p_.z() = dz * std::cos(w * dT) + (state_in.vz_ / w) * std::sin(w * dT) + g_z_mean;
+    state_out.p_.z() = dz * std::cos(w * dT) + (state_in.vz_ / w) * std::sin(w * dT) + z_mean_ref();
     state_out.vz_ = -dz * w * std::sin(w * dT) + state_in.vz_ * std::cos(w * dT);
   }
 
@@ -255,12 +260,11 @@ struct Predict {
       CYRA_model(s_in, t, s_out);
       
       pred_p = s_out.p_;
-      pred_v.x() = s_out.v_ * cos(s_out.theta_);
-      pred_v.y() = s_out.v_ * sin(s_out.theta_);
+      pred_v.x() = s_out.v_ * std::cos(s_out.theta_);
+      pred_v.y() = s_out.v_ * std::sin(s_out.theta_);
       pred_v.z() = s_out.vz_; 
   }
 
-  // 兼容性函数 (使用模板)
   template<typename T> void vis_openset(T open_set) {} 
   template<typename T> void vis_curnode(T curnode) {}
 };

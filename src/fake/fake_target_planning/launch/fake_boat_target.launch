@@ -1,7 +1,7 @@
 <launch>
 
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mapping)/config/rviz_sim.rviz">
-  </node>
+  <!-- <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mapping)/config/rviz_sim.rviz">
+  </node> -->
   
   <node pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">
     <rosparam file="$(find uav_simulator)/config/mockamap.yaml"/>
@@ -11,7 +11,7 @@
   <group ns="target">
 
     <node pkg="uav_simulator" type="fake_boat.py" name="fake_boat_node" output="screen">
-        <param name="velocity" value="1.0"/>   <param name="wave_amp" value="0.5"/>   <param name="wave_freq" value="2.0"/>  <remap from="/target_pose" to="odom"/> 
+        <param name="velocity" value="1.0"/>   <param name="wave_amp" value="1.0"/>   <param name="wave_freq" value="0.5"/>  <remap from="/target_pose" to="odom"/> 
     </node>
 
     <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization_car" output="screen">

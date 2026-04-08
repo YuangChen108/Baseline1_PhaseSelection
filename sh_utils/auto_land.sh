@@ -15,7 +15,7 @@ rostopic pub /move_base_simple/goal geometry_msgs/PoseStamped "header:
 pose:
   position:
     x: 5.0
-    y: 30.0
+    y: 50.0
     z: 0.0
   orientation:
     x: 0.0

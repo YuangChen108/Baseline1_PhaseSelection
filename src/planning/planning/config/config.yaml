@@ -53,7 +53,7 @@ prediction/omega_filter_t: 0.5
 prediction/acc_max: 1.5
 prediction/acc_filter_t: 0.9
 prediction/pause_debug: 0
-prediction/wave_freq: 2.0  
+prediction/wave_freq: 0.0  
 prediction/z_mean: 0.0
 # prediction/wave_amp: 0.3 这一项在fake_boat.py脚本中定义为私有参数，模拟和预测。
 
@@ -90,8 +90,8 @@ is_use_viewpoint: 0
 plan_estimated_duration: 0.08
 land_no_plan_time: 0.1
 short_mode_time: 0.2
-tracking_height_expect: 4.0
-tracking_dis_expect: 2.0 
+tracking_height_expect: 3.0
+tracking_dis_expect: 0.5 
 tracking_angle_expect: -3.14
 tracking_dur: 3.0
 tracking_dt: 0.5
@@ -133,7 +133,7 @@ vmax: 15.0
 dv_max_horiz_track: 1.5
 v_max_vert_track: 1.0
 dv_max_horiz_land: 2.5
-v_max_vert_land: 2.0
+v_max_vert_land: 3.5
 amax: 3.0
 dyaw_max: 0.14
 thrust_max: 17.0
@@ -150,7 +150,7 @@ eps_pz: 0.35
 is_with_perception: 1
 short_mode_with_perception: 0
 
-rhoP: 100000.0
+rhoP: 200000.0
 rhoV: 10000.0
 rhoA: 1000.0
 rhoThrust: 10000.0
@@ -160,7 +160,7 @@ rhoPerchingPreception: 1.1
 
 rhoT_track: 50.0
 rhoT_land: 80000.0
-rhoVt: 200000.0
+rhoVt: 50000.0
 rhoAt: -10000.0
 rhoPt: -10000.0
 

@@ -79,27 +79,29 @@ void DataCallBacks::init_ros(ros::NodeHandle& nh){
   }
 
   void DataCallBacks::target_callback(const nav_msgs::Odometry::ConstPtr& msgPtr) {
-    static TimePoint last_stamp;
-    static bool has_last_ = false;
-    if (!has_last_ || durationSecond(TimeNow(), last_stamp) >= 0.09){
-      last_stamp = TimeNow();
-      has_last_ = true;
-    }else{
-      has_last_ = true;
-      return;
-    }
-
+    // 1. 彻底删掉那个基于 TimeNow() 的截流器，拥抱仿真器的每一帧数据
+    // 在仿真里，我们要的是高频率、低延迟
+    
     Eigen::Vector3d target_p;
     target_p << msgPtr->pose.pose.position.x, msgPtr->pose.pose.position.y, msgPtr->pose.pose.position.z;
-    Eigen::Quaterniond target_q;
-    target_q.w() = msgPtr->pose.pose.orientation.w;
-    target_q.x() = msgPtr->pose.pose.orientation.x;
-    target_q.y() = msgPtr->pose.pose.orientation.y;
-    target_q.z() = msgPtr->pose.pose.orientation.z;
-    double target_v = sqrt(msgPtr->twist.twist.linear.x *msgPtr->twist.twist.linear.x + msgPtr->twist.twist.linear.y * msgPtr->twist.twist.linear.y);
-    dataManagerPtr_->car_ekf_ptr_->update_p_state_diff_v(target_p, Eigen::Vector3d::Zero(), TimeNow());
-  }
 
+    // 2. 提取 Python 脚本发出来的纯净三维线速度
+    Eigen::Vector3d target_v_real;
+    target_v_real << msgPtr->twist.twist.linear.x, 
+                     msgPtr->twist.twist.linear.y, 
+                     msgPtr->twist.twist.linear.z;
+
+  // 1. 提取总纳秒数
+    uint64_t nsec = msgPtr->header.stamp.toNSec();
+
+    // 2. 使用大括号 {} 初始化，防止编译器误认为是函数声明
+    // 同时通过 nanoseconds 构造 duration，再构造 time_point
+    TimePoint update_timestamp{std::chrono::nanoseconds{nsec}};
+
+    // 3. 传参调用
+    dataManagerPtr_->car_ekf_ptr_->update_p_state_diff_v(target_p, target_v_real, update_timestamp);
+
+}
   void DataCallBacks::goal_callback(const geometry_msgs::PoseStampedConstPtr& msgPtr){
     Odom goal;
     goal.odom_p_ << msgPtr->pose.position.x, msgPtr->pose.position.y, msgPtr->pose.position.z;

@@ -231,162 +231,218 @@ TLPlanner::PlanResState TLPlanner::plan_track(const Odom& init_state_in, const O
 }
 
 TLPlanner::PlanResState TLPlanner::plan_land(const Odom& init_state_in, const Odom& target_data, TrajData& traj_data, const double& t_replan) {
-    // ==================== 1. 基础数据提取 (保留原样) ====================
+    auto start_solve = std::chrono::high_resolution_clock::now();
+
+    // ==================== 🧪 实验对照组开关 (Baseline 开关) ====================
+    // true:  Baseline 1 (开启 XY 预测)
+    // false: Baseline 0 (完全关闭预测，认为目标静止)
+    bool use_prediction_logic = true; // 👈 在这里切换 Baseline 0 和 1
+    // =========================================================================
+
+    //! 1. target fix (水平运动预测)
+    prediction::State tar;
     double theta = rot_util::quaternion2yaw(target_data.odom_q_);
-    double v_horiz = target_data.odom_v_.head(2).norm(); 
-    double vz = target_data.odom_v_.z();                
-    double omega = target_data.odom_dyaw_;
-    double a_horiz = target_data.odom_a_.head(2).norm();
-
-    // 🚀 开关：测试时建议开启 Predict，我们的熔断逻辑会自动处理末端
-    bool is_use_predict = true; 
-
-    // --- 变量提前声明 ---
-    Eigen::Vector3d target_p_final;
-    Eigen::Vector3d target_v_final;
-    double target_theta_final;
-    double target_omega_final;
-    double estimated_T = 0.0; 
-    double log_T = 0.0; 
-    bool generate_new_traj_success = false;
-
-    // 初始输入状态（加上降落板偏移）
-    prediction::State tar_now(target_data.odom_p_, v_horiz, 0.0, theta, omega, vz);
-    tar_now.p_ = tar_now.p_ + rot_util::yaw2quaternion(tar_now.theta_) * land_dp_;
     
-    double dist_xy = (init_state_in.odom_p_.head(2) - tar_now.p_.head(2)).norm();
-    double dist_3d = (init_state_in.odom_p_ - tar_now.p_).norm();
+    // 原始提取速度
+    double v = target_data.odom_v_.head(2).dot(Eigen::Vector2d(cos(theta), sin(theta)));
+    double omega = target_data.odom_dyaw_;
 
-    // ==================== 🚀 2. 融合源代码：自适应分段与 TTG 分配 ====================
-    // 💡 学习源代码：根据空间距离动态确定分段数，确保轨迹自由度与距离匹配
-    int seg_num = dist_3d / 0.6; // 参考源代码 0.5m/段，这里微调至 0.6m
-    if (a_horiz > 1.5) seg_num += 1; // 目标加速度大时增加自由度以防无法收敛
-    seg_num = std::max(2, std::min(seg_num, 6)); // 限制在合理区间
+    // ==================== //! 🛡️ 位置与速度双重锁 (加固版) ====================
+    static Eigen::Vector3d last_boat_p = target_data.odom_p_;
+    static bool first_frame = true;
 
-    if (is_use_predict && dist_3d > 1.0) { // 🚨 略微扩大熔断范围至 1.0m 以配合自适应分段
-        double current_uav_speed = init_state_in.odom_v_.norm();
-        // 💡 学习源代码：更激进的逼近速度期望
-        double dynamic_approach_speed = std::max(2.5, current_uav_speed); 
-        double raw_T = dist_3d / dynamic_approach_speed;
+    // 先准备一个要传给 tar_in 的位置变量
+    Eigen::Vector3d sanitized_p = target_data.odom_p_;
+    double pos_jump = (target_data.odom_p_ - last_boat_p).norm();
 
-        static double last_estimated_T = 1.0;
-        // 💡 学习源代码：利用平滑的 TTG 作为 MINCO 优化的种子时间
-        estimated_T = 0.5 * last_estimated_T + 0.5 * raw_T; 
-        
-        estimated_T = std::max(0.6, std::min(estimated_T, 2.5)); 
-        last_estimated_T = estimated_T;
-
-        prediction::State tar_pred;
-        prediction::Predict::CYRA_model(tar_now, estimated_T, tar_pred);
-
-        target_p_final = tar_pred.p_;
-        target_v_final = Eigen::Vector3d(tar_pred.v_ * cos(tar_pred.theta_), 
-                                         tar_pred.v_ * sin(tar_pred.theta_), 
-                                         tar_pred.vz_);
-        target_theta_final = tar_pred.theta_;
-        target_omega_final = tar_pred.omega_;
-        log_T = estimated_T; 
+    // 1. 位置锁：防止瞬移
+    if (!first_frame && pos_jump > 0.4) { // 稍微放宽到0.4，适配20Hz左右的波动
+        sanitized_p = last_boat_p; 
     } else {
-        // 🚨 【不带预测 / 熔断模式】：锁定实时观测
-        target_p_final.x() = tar_now.p_.x();
-        target_p_final.y() = tar_now.p_.y();
-        target_p_final.z() = tar_now.p_.z(); 
-
-        target_v_final.x() = tar_now.v_ * cos(tar_now.theta_);
-        target_v_final.y() = tar_now.v_ * sin(tar_now.theta_);
-        target_v_final.z() = 0.0; 
-
-        target_theta_final = tar_now.theta_;
-        target_omega_final = tar_now.omega_;
-        
-        // 💡 学习源代码：末端不再给死 0.15s，而是给一个极短的种子时间引导 MINCO 快速下砸
-        estimated_T = (dist_3d < 0.6) ? 0.2 : 0.4; 
-        log_T = 0.0;
-        
-        // 🚨 强制末端分段：在熔断区内将 seg_num 降到最低（2-3段），消除多余回环
-        seg_num = (dist_3d < 0.8) ? 2 : 3;
+        last_boat_p = target_data.odom_p_;
+        first_frame = false;
     }
 
-    // ==================== ✅ 3. 暴力下压补偿策略 (保持原样) ====================
-    double z_offset = -0.25;
-    if (dist_3d < 0.8) {
-        // 目标垂直速度 = 船速 - 1.2m/s，确保产生极强的撞击冲量
-        target_v_final.z() = std::min(-1.5, target_v_final.z() - 1.0); 
-        z_offset = -0.55; // 压得更深，瞄准板下 55cm
+    // 2. 速度锁：物理限制
+    const double MAX_BOAT_V = 1.5; 
+    const double MAX_BOAT_OMEGA = 0.5; 
+    if (v > MAX_BOAT_V) v = MAX_BOAT_V;
+    else if (v < -MAX_BOAT_V) v = -MAX_BOAT_V;
+
+    if (std::abs(omega) > MAX_BOAT_OMEGA) {
+        omega = (omega > 0) ? MAX_BOAT_OMEGA : -MAX_BOAT_OMEGA;
+    }
+    // =======================================================================
+
+    // ✅ 现在使用经过清洗的 sanitized_p 构建状态
+    prediction::State tar_in(sanitized_p, v, 0.0, theta, omega);
+    
+    // 加上降落板相对于船体中心的偏移
+    tar_in.p_ = tar_in.p_ + rot_util::yaw2quaternion(tar_in.theta_) * land_dp_;
+
+    // ==================== 🚀 预测分支逻辑 (Baseline 开关控制) ====================
+    bool generate_new_traj_success = true;
+    std::vector<Eigen::Vector3d> target_predcit;
+    
+    if (use_prediction_logic) {
+        // 【Baseline 1】执行 CYRA 预测模型，并生成未来轨迹点阵
+        prediction::Predict::CYRA_model(tar_in, plan_estimated_duration_, tar);
+        generate_new_traj_success = prePtr_->predict(tar.p_, tar.v_, 0.0, tar.theta_, tar.omega_, target_predcit, tracking_dur_);
+    } else {
+        // 【Baseline 0】认为拦截点就是“此时此刻”的位置，速度设为 0
+        tar = tar_in;
+        tar.v_ = 0.0;
+        tar.omega_ = 0.0;
+        
+        // 填充静态点阵，让优化器以为终点没动
+        int pts_num = std::max(1, (int)(tracking_dur_ / tracking_dt_));
+        for (int i = 0; i < pts_num; ++i) {
+            target_predcit.push_back(tar_in.p_);
+        }
     }
 
-    target_v_final.z() = std::min(0.0, target_v_final.z());
-    target_p_final.z() += z_offset;
+    if (!generate_new_traj_success) {
+        INFO_MSG_RED("[tlplanner] Predict fail!");
+        return FAIL;
+    }
+    // =======================================================================
 
-    // ==================== 5. 轨迹生成 (MINCO) (保留原样) ====================
+    // ==================== ✅ 核心“压路机” (降落目标：高度 0.0) ====================
+    // 目标高度为降落板实际高度
+    double flat_land_z = tar_in.p_.z(); 
+    
+    for (auto& pt : target_predcit) {
+        pt.z() = flat_land_z;
+    }
+    tar.p_.z() = flat_land_z;
+    // =======================================================================
+
+    //! 3. get inital state
     Eigen::MatrixXd init_state, init_yaw;
-    init_state.setZero(3, 4); init_yaw.setZero(1, 2);
+    init_state.setZero(3, 3);
+    init_yaw.setZero(1, 2);
     init_state.col(0) = init_state_in.odom_p_;
     init_state.col(1) = init_state_in.odom_v_;
     init_state.col(2) = init_state_in.odom_a_;
-    init_state.col(3) = init_state_in.odom_j_;
     init_yaw(0, 0)    = rot_util::quaternion2yaw(init_state_in.odom_q_);
     init_yaw(0, 1)    = init_state_in.odom_dyaw_;
 
-    Trajectory<7> traj_land;
-    Eigen::Vector3d rpy(land_roll_, land_pitch_, target_theta_final); 
-    Eigen::Quaterniond land_q = rot_util::euler2quaternion(rpy);
-
-    trajoptPtr_->set_with_perception(is_with_perception_);
-    double z_floor_limit = std::min(init_state.col(0).z(), target_p_final.z()) - 1.2; 
-
-    // 调用 MINCO，使用自适应计算出的 seg_num
-    generate_new_traj_success = trajoptPtr_->generate_traj(
-        init_state, init_yaw, target_p_final, target_v_final, 
-        target_theta_final, target_omega_final, land_q, seg_num, 
-        traj_land, t_replan, z_floor_limit);
-
+    //! 4. path search (使用 A* 寻找下降走廊)
+    Eigen::Vector3d p_start = init_state.col(0);
+    std::vector<Eigen::Vector3d> path, way_pts;
+    
+    envPtr_->set_track_angle(0.0);
+    envPtr_->set_track_dis(0.0);
+    
+    generate_new_traj_success = envPtr_->findVisiblePath(p_start, target_predcit, tracking_dt_, way_pts, path, is_use_viewpoint_);
+    
     if (!generate_new_traj_success) {
+        INFO_MSG_RED("[tlplanner] A path fail!");
         return FAIL;
     }
 
-    // 更新状态
-    traj_data.traj_d7_ = traj_land;
-    traj_data.state_ = TrajData::D7;
+    //! 5. traj opt
+    Trajectory<5> traj_land; 
+    Eigen::MatrixXd final_state, final_yaw;
+    final_state.setZero(3, 4);
+    final_yaw.setZero(1, 2);
+
+    for (auto& pt : path) {
+        pt.z() = std::max(pt.z(), flat_land_z);
+    }
+    
+    final_state.col(0) = path.back(); 
+    
+    // ==================== 🚀 预期末端速度约束 (Baseline 开关控制) ====================
+    if (use_prediction_logic) {
+        final_state.col(1) = Eigen::Vector3d(tar.v_*cos(tar.theta_), tar.v_*sin(tar.theta_), 0.0);
+    } else {
+        final_state.col(1) = Eigen::Vector3d(0.0, 0.0, 0.0);
+    }
+    // =======================================================================
+    
+    final_yaw(0, 0) = tar.theta_;
+    
+    trajoptPtr_->set_track_angle(0.0);
+    trajoptPtr_->set_track_dis(0.0);
+
+    generate_new_traj_success = trajoptPtr_->generate_traj(init_state, final_state, init_yaw, final_yaw, 2.0, path, way_pts, target_predcit, traj_land);
+    
+    auto end_solve = std::chrono::high_resolution_clock::now();
+    double solve_time_ms = std::chrono::duration<double, std::milli>(end_solve - start_solve).count();
+
+    if (!generate_new_traj_success) {
+        INFO_MSG_RED("[tlplanner] Traj opt fail!");
+        return FAIL;
+    }
+
+    // ==================== 状态机赋值 ====================
+    traj_data.traj_d5_ = traj_land;
+    traj_data.state_ = TrajData::D5; 
     traj_data.start_time_ = TimeNow();
 
-    // ==================== 📊 全维度降落深度分析 (保留原样) ====================
+    // ==================== 为了 CSV 日志不报错的计算与占位 ====================
+    bool is_use_predict = use_prediction_logic; // 🚀 自动同步 CSV 标志位
+    double dist_3d = (init_state_in.odom_p_ - tar_in.p_).norm();
+    double dist_xy = (init_state_in.odom_p_.head(2) - tar_in.p_.head(2)).norm();
+    Eigen::Vector3d target_p_final = final_state.col(0);
+    Eigen::Vector3d target_v_final = final_state.col(1);
+    double target_theta_final = final_yaw(0,0);
+    double target_omega_final = tar.omega_;
+    double estimated_T = plan_estimated_duration_;
+    int seg_num = 5;
+    double z_offset = 0.0;
+    double pred_offset = (target_p_final - tar_in.p_).norm();
+
+    double current_traj_cost = 0.0; 
+    if (traj_land.getTotalDuration() > 0.001) {
+        double dt = 0.05; 
+        double total_dur = traj_land.getTotalDuration();
+        for (double t = 0.0; t <= total_dur; t += dt) {
+            Eigen::Vector3d jerk = traj_land.getJer(t); 
+            current_traj_cost += jerk.squaredNorm() * dt; 
+        }
+    }
+    
+    prediction::State tar_now = tar_in;
+
+    // ==================== 📊 CSV 导出 (全过程记录版) ====================
     auto now_chrono = TimeNow();
     auto dur_since_epoch = now_chrono.time_since_epoch();
     double time_sec = std::chrono::duration_cast<std::chrono::microseconds>(dur_since_epoch).count() / 1e6;
 
-    static std::ofstream detail_file;
-    if (!detail_file.is_open()) {
-        detail_file.open("/home/Quadrotor-Landing-with-Minco/experiments_data/landing_deep_analysis.csv", std::ios::out);
-        detail_file << "Time,Is_Predict,Dist_3D,Dist_XY,"
-                    << "UAV_X,UAV_Y,UAV_Z,UAV_VX,UAV_VY,UAV_VZ," 
-                    << "Boat_X,Boat_Y,Boat_Z,Boat_VX,Boat_VY,Boat_VZ,"
-                    << "Target_PX,Target_PY,Target_PZ,Target_VZ,"
-                    << "Estimated_T,Seg_Num,Z_Offset,"
-                    << "Traj_Duration,Total_Cost" 
-                    << std::endl;
-    }
-    Eigen::Vector3d uav_v = init_state_in.odom_v_;
-    Eigen::Vector3d uav_p = init_state_in.odom_p_;
-    double current_traj_cost = 0.0; 
+    static double run_id = time_sec; 
 
+    static std::ofstream detail_file;
+    const std::string file_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/landing_deep_analysis.csv";
+    
+    std::ifstream check_file(file_path);
+    bool file_exists = check_file.good();
+    check_file.close();
+
+    if (!detail_file.is_open()) {
+        detail_file.open(file_path, std::ios::out | std::ios::app);
+        if (!file_exists) {
+            detail_file << "Run_ID,Time,Is_Predict,Dist_3D,Dist_XY,UAV_X,UAV_Y,UAV_Z,UAV_VX,UAV_VY,UAV_VZ,"
+                        << "Boat_X,Boat_Y,Boat_Z,Boat_VX,Boat_VY,Boat_VZ,Target_PX,Target_PY,Target_PZ,"
+                        << "Target_VZ,Estimated_T,Seg_Num,Z_Offset,Traj_Duration,Solve_Time_ms,Jerk_Cost,Pred_Offset" << std::endl;
+        }
+    }
+    
     detail_file << std::fixed << std::setprecision(6)
-                << time_sec << ","
-                << (is_use_predict ? 1 : 0) << ","
-                << dist_3d << "," << dist_xy << ","
-                << uav_p.x() << "," << uav_p.y() << "," << uav_p.z() << ","
-                << uav_v.x() << "," << uav_v.y() << "," << uav_v.z() << ","
+                << run_id << "," << time_sec << "," << (is_use_predict ? 1 : 0) << "," << dist_3d << "," << dist_xy << ","
+                << init_state_in.odom_p_.x() << "," << init_state_in.odom_p_.y() << "," << init_state_in.odom_p_.z() << ","
+                << init_state_in.odom_v_.x() << "," << init_state_in.odom_v_.y() << "," << init_state_in.odom_v_.z() << ","
                 << tar_now.p_.x() << "," << tar_now.p_.y() << "," << tar_now.p_.z() << ","
                 << target_data.odom_v_.x() << "," << target_data.odom_v_.y() << "," << target_data.odom_v_.z() << ","
                 << target_p_final.x() << "," << target_p_final.y() << "," << target_p_final.z() << ","
-                << target_v_final.z() << "," 
-                << estimated_T << "," << seg_num << "," << z_offset << ","
-                << traj_land.getTotalDuration() << "," << current_traj_cost << std::endl;
+                << target_v_final.z() << "," << estimated_T << "," << seg_num << "," << z_offset << ","
+                << traj_land.getTotalDuration() << "," 
+                << solve_time_ms << "," << current_traj_cost << "," << pred_offset << std::endl;
     detail_file.flush();
 
-    // ==================== 7. 数据导出与可视化 (保留原样) ====================
+    // ==================== 7. Bag 与 Web 记录 ====================
     csvWriterPtr_->set_target_state(target_p_final, target_v_final, target_theta_final, target_omega_final);
-    csvWriterPtr_->exportToCSV(traj_land, 0.01);
 
     std::string plan_path = "/home/Quadrotor-Landing-with-Minco/experiments_data/planned_traj.csv";
     std::ofstream plan_file(plan_path, std::ios::out); 
@@ -401,11 +457,31 @@ TLPlanner::PlanResState TLPlanner::plan_land(const Odom& init_state_in, const Od
         plan_file.close();
     }
 
+    std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> rays;
+    double t = 0;
+    for (int i = 0; i < (int)target_predcit.size(); ++i){
+        if (t > traj_land.getTotalDuration()) break;
+        rays.emplace_back(target_predcit[i], traj_land.getPos(t));
+        t += tracking_dt_;
+    }
+
+    BAG(dataManagerPtr_->BagPtr_->write_path_msg("/car_predict", target_predcit));
+    BAG(dataManagerPtr_->BagPtr_->write_pointcloud_msg("/car_predict_pt", target_predcit));
+    BAG(dataManagerPtr_->BagPtr_->write_path_msg("/astar", path));
     BAG(dataManagerPtr_->BagPtr_->write_traj("/traj", traj_land));
-    if (web_vis_hz_ > 0) visPtr_->visualize_traj(traj_land, "traj");
+    BAG(dataManagerPtr_->BagPtr_->write_pairline("/track_rays", rays));
+
+    if (web_vis_hz_ > 0){
+        visPtr_->visualize_path(target_predcit, "car_predict");
+        visPtr_->visualize_pointcloud(target_predcit, "car_predict_pt");
+        visPtr_->visualize_path(path, "astar");
+        visPtr_->visualize_traj(traj_land, "traj");
+        visPtr_->visualize_pairline(rays, "/track_rays");
+    }
 
     return PLANSUCC;
 }
+
 bool TLPlanner::valid_cheack(const TrajData& traj_data, const TimePoint& cur_t){
     double t0 = durationSecond(cur_t, traj_data.start_time_);
     t0 = t0 > 0.0 ? t0 : 0.0;
