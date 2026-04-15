@@ -20,15 +20,13 @@ class State {
         const double& v,
         const double& a,
         const double& theta,
-        const double& omega,
-        const double& vz = 0.0): p_(p), v_(v), a_(a), theta_(theta), omega_(omega), vz_(vz){}
+        const double& omega): p_(p), v_(v), a_(a), theta_(theta), omega_(omega){}
 
   Eigen::Vector3d p_;
   double v_;      
   double a_;      
   double theta_;  
   double omega_;  
-  double vz_;     // 垂直速度
 };
 
 struct Node {
@@ -73,18 +71,7 @@ struct Predict {
   }
 
  public:
-  // 🚀 核心改动 1：使用静态引用函数代替 static inline 变量 (兼容 C++11)
-  // 这种写法确保了无论多少个文件引用此头文件，g_wave_freq 永远指向同一个地址
-  static double& wave_freq_ref() {
-      static double val = 1.0;
-      return val;
-  }
-  static double& z_mean_ref() {
-      static double val = 0.0;
-      return val;
-  }
 
-  // 构造函数
   inline Predict(std::shared_ptr<parameter_server::ParaeterSerer>& paraPtr) {
     paraPtr->get_para("tracking_dt", dt);
     paraPtr->get_para("prediction/rho_a", rho_a);
@@ -98,16 +85,6 @@ struct Predict {
       data[i] = new Node;
     }
 
-    // 🚀 核心改动 2：修复 get_para 返回 void 的报错
-    // 既然不能放在 if 里，我们先设置默认值，读取后再打印出来检验
-    wave_freq_ref() = 1.0; 
-    paraPtr->get_para("prediction/wave_freq", wave_freq_ref());
-
-    z_mean_ref() = 0.0;
-    paraPtr->get_para("prediction/z_mean", z_mean_ref());
-
-    // 打印结果以便排查
-    std::cout << "\033[32m[Prediction] Current g_wave_freq: " << wave_freq_ref() << " Hz\033[0m" << std::endl;
   }
 
   inline void set_gridmap_ptr(std::shared_ptr<map_interface::MapInterface>& gridmap_ptr){
@@ -117,7 +94,6 @@ struct Predict {
     visPtr_ = visPtr;
   }
 
-  // predict 函数
   inline bool predict(const Eigen::Vector3d& target_p,
                       const double& target_v, 
                       const double& target_a,
@@ -127,7 +103,8 @@ struct Predict {
                       const double& pre_dur,
                       const double& max_time = 0.1) {
     
-    State state_start(target_p, target_v, 0.0, target_theta, target_omega, 0.0); 
+    // ✂️ 删除了构造函数中的 vz 传参
+    State state_start(target_p, target_v, 0.0, target_theta, target_omega); 
 
     if (state_start.omega_ > omega_max) state_start.omega_ = omega_max;
     else if (state_start.omega_ < -omega_max) state_start.omega_ = -omega_max;
@@ -215,9 +192,8 @@ struct Predict {
     return true;
   }
 
-// ref: Vehicle Trajectory Prediction based on Motion Model and Maneuver Recognition
   static void CYRA_model(const State& state_in, const double& dT, State& state_out){
-    state_out = state_in; // 🚀 这里隐式地继承了 state_in.p_.z() 和 state_in.vz_
+    state_out = state_in; 
     
     state_out.v_ = state_in.v_ + state_in.a_ * dT;
     if (abs(state_in.omega_) < 1e-2){
@@ -233,7 +209,6 @@ struct Predict {
     }
   }
 
-  // getPredState 接口
   inline void getPredState(const double& t, 
                            const Eigen::Vector3d& start_p, 
                            const Eigen::Vector3d& start_v, 
@@ -243,7 +218,8 @@ struct Predict {
       
       double v_horiz = start_v.head(2).norm();
       double theta = std::atan2(start_v.y(), start_v.x());
-      State s_in(start_p, v_horiz, 0.0, theta, omega_yaw, start_v.z());
+      // ✂️ 删除了构造函数末尾的 vz 传入
+      State s_in(start_p, v_horiz, 0.0, theta, omega_yaw);
       State s_out;
       
       CYRA_model(s_in, t, s_out);
@@ -251,7 +227,7 @@ struct Predict {
       pred_p = s_out.p_;
       pred_v.x() = s_out.v_ * std::cos(s_out.theta_);
       pred_v.y() = s_out.v_ * std::sin(s_out.theta_);
-      pred_v.z() = s_out.vz_; 
+      // ✂️ 删除了对 pred_v.z() 的赋值，保持原本高度或由外部控制
   }
 
   template<typename T> void vis_openset(T open_set) {} 

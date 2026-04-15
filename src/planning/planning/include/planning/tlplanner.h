@@ -45,6 +45,7 @@ private:
     double tracking_dt_;
     // tracking expected height, distance and relative angle
     double tracking_height_expect_, tracking_dis_expect_, tracking_angle_expect_;
+    double wave_omega_;
     
     // landing pos offset
     Eigen::Vector3d land_dp_;

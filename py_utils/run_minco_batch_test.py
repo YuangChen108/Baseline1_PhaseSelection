@@ -5,31 +5,26 @@ import signal
 import sys
 
 # ================= 配置区域 =================
-TOTAL_RUNS = 100         # 总共跑多少次
+TOTAL_RUNS = 1         # 总共跑多少次
 INIT_WAIT_TIME = 8       # NEW: 增加初始化时间，确保 TF 树完全建立 (建议 8-10s)
 SIM_DURATION = 12        # NEW: 增加仿真时长，确保降落动作完全结算
 LOG_FILE = "batch_test_log.txt" 
 # ===========================================
 
 def cleanup_ros():
-    """彻底摧毁 ROS 世界，重建秩序"""
     print("🧹 正在强力清理残留进程...")
+    kill_script = "./sh_utils/kill_all.sh"
     
-    # NEW: 使用 pkill 匹配关键词，比 killall 更稳
-    # 一次性杀掉所有相关的
-    cmd = "pkill -9 -f 'ros|gazebo|planning|nodelet|rviz|target'"
-    os.system(cmd)
-    
-    # 彻底清理可能锁死端口的进程
-    os.system("killall -9 rosmaster roscore > /dev/null 2>&1")
-    
-    # NEW: 删掉这一行！它是导致你卡死的元凶
-    # os.system("rosnode cleanup") 
-    
-    # 给系统 3 秒钟喘气（通常 3 秒足够释放端口了）
+    if not os.access(kill_script, os.X_OK):
+        os.system(f"chmod +x {kill_script}")
+        
+    try:
+        subprocess.run(kill_script, shell=True, check=True)
+    except subprocess.CalledProcessError:
+        pass # 忽略找不到进程的报错
     time.sleep(3) 
     print("✨ 宇宙已重置。")
-
+    
 def run_experiment(iteration):
     print(f"\n{'='*40}")
     print(f"🚀 开始第 {iteration + 1} / {TOTAL_RUNS} 次实验")
@@ -44,7 +39,7 @@ def run_experiment(iteration):
     proc_env = subprocess.Popen(cmd_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
     # NEW: 给环境启动留出一点领先时间
-    time.sleep(3) 
+    time.sleep(15) 
 
     # 3. 启动规划器
     print("-> 2. 启动规划器 (Planner)...")

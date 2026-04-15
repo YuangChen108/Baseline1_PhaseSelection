@@ -53,8 +53,7 @@ prediction/omega_filter_t: 0.5
 prediction/acc_max: 1.5
 prediction/acc_filter_t: 0.9
 prediction/pause_debug: 0
-prediction/wave_freq: 0.5  
-prediction/z_mean: 0.0
+
 # prediction/wave_amp: 0.3 这一项在fake_boat.py脚本中定义为私有参数，模拟和预测。
 
 filter_t_k: 1.0
@@ -95,6 +94,7 @@ tracking_dis_expect: 0.5
 tracking_angle_expect: -3.14
 tracking_dur: 3.0
 tracking_dt: 0.5
+wave_omega: 1.0
 # env
 track_angle_vmax: 0.5
 tolerance_d_astar: 0.3

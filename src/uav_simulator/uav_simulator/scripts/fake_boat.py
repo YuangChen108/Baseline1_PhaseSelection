@@ -25,6 +25,7 @@ def fake_boat():
 
     rospy.Subscriber('/move_base_simple/goal', PoseStamped, goal_callback)
     pub = rospy.Publisher('/target_pose', Odometry, queue_size=10)
+    
 
     # 1. 读取速度参数
     velocity = rospy.get_param('~velocity', 1.0) 

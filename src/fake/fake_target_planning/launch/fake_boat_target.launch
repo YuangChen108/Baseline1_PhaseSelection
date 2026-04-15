@@ -1,7 +1,7 @@
 <launch>
 
-  <!-- <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mapping)/config/rviz_sim.rviz">
-  </node> -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mapping)/config/rviz_sim.rviz">
+  </node>
   
   <node pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">
     <rosparam file="$(find uav_simulator)/config/mockamap.yaml"/>
